@@ -13,6 +13,11 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<OrdersDbContext>(options =>
 options.UseSqlServer(builder.Configuration.GetConnectionString("OrdersDb")));
 
+builder.Services.AddHttpClient("InventoryService", client =>
+{
+    client.BaseAddress = new Uri("http://localhost:5209/");
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
