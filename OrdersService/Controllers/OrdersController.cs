@@ -36,9 +36,18 @@ public class OrdersController : ControllerBase
     }
 
     // POST /api/orders
+    // pattern: request DTO/command model
     [HttpPost]
-    public async Task<ActionResult<Order>> CreateOrder(Order order)
+    public async Task<ActionResult<Order>> CreateOrder(CreateOrderRequest request)
     {
+        var order = new Order
+        {
+            ProductId = request.ProductId,
+            Quantity = request.Quantity,
+            DateCreated = DateTime.UtcNow,
+            Status = "Pending"
+        };
+
         // Get an HttpClient configured for InventoryService
         var client = _httpClientFactory.CreateClient("InventoryService");
 
