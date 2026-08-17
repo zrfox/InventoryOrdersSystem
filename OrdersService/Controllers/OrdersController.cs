@@ -45,9 +45,18 @@ public class OrdersController : ControllerBase
         // Call InventoryService to get the product. Base address set for client in Program.cs
         var response = await client.GetAsync($"api/products/{order.ProductId}");
 
+        // early return/guard clause pattern. No else if, just ifs.
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return NotFound($"Product {order.ProductId} not found in inventory.");
+        }
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return StatusCode(502, "Failed to authenticate with inventory service.");
+        }
         if (!response.IsSuccessStatusCode)
         {
-            return BadRequest($"Product {order.ProductId} not found in inventory.");
+            return StatusCode(502, "Inventory service returned an unexpected error.");
         }
 
         // Deserialize the product from the response

@@ -18,18 +18,23 @@ builder.Services.AddHttpClient("InventoryService", client =>
     // Looks for "InventoryServiceUrl" in appsettings or Environment Variables
     var baseUrl = builder.Configuration["InventoryServiceUrl"] ?? "http://localhost:5209";
     client.BaseAddress = new Uri(baseUrl);
+    client.DefaultRequestHeaders.Add("X-Api-Key", builder.Configuration["InventoryApiKey"]);
 });
 
 var app = builder.Build();
 
+// need to keep Swagger in dev mode when implementing security. 
+
 // Configure the HTTP request pipeline.
-//if (app.Environment.IsDevelopment())
-//{
+if (app.Environment.IsDevelopment())
+{
     app.UseSwagger();
     app.UseSwaggerUI();
-//}
+}
 
 app.UseHttpsRedirection();
+
+app.UseMiddleware<OrdersService.Middleware.ApiKeyMiddleware>();
 
 app.UseAuthorization();
 
