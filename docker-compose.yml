@@ -1,0 +1,29 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD}
+    ports:
+      - "1433:1433"
+
+  inventoryservice:
+    build:
+      context: ./InventoryService
+    ports:
+      - "5209:8080"
+    environment:
+      - ConnectionStrings__InventoryDb=Server=sqlserver;Database=InventoryDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True
+    depends_on:
+      - sqlserver
+
+  ordersservice:
+    build:
+      context: ./OrdersService
+    ports:
+      - "5210:8080"
+    environment:
+      - ConnectionStrings__OrdersDb=Server=sqlserver;Database=OrdersDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True
+    depends_on:
+      - sqlserver
+      - inventoryservice

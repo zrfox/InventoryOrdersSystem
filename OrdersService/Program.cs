@@ -15,17 +15,19 @@ options.UseSqlServer(builder.Configuration.GetConnectionString("OrdersDb")));
 
 builder.Services.AddHttpClient("InventoryService", client =>
 {
-    client.BaseAddress = new Uri("http://localhost:5209/");
+    // Looks for "InventoryServiceUrl" in appsettings or Environment Variables
+    var baseUrl = builder.Configuration["InventoryServiceUrl"] ?? "http://localhost:5209";
+    client.BaseAddress = new Uri(baseUrl);
 });
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
+//if (app.Environment.IsDevelopment())
+//{
     app.UseSwagger();
     app.UseSwaggerUI();
-}
+//}
 
 app.UseHttpsRedirection();
 
