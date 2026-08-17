@@ -14,6 +14,7 @@ services:
       - "5209:8080"
     environment:
       - ConnectionStrings__InventoryDb=Server=sqlserver;Database=InventoryDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True
+      - InventoryApiKey=${INVENTORY_API_KEY}
     depends_on:
       - sqlserver
 
@@ -25,6 +26,7 @@ services:
     environment:
       - ConnectionStrings__OrdersDb=Server=sqlserver;Database=OrdersDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True
       - InventoryServiceUrl=http://inventoryservice:8080
+      - InventoryApiKey=${INVENTORY_API_KEY}
     depends_on:
       - sqlserver
       - inventoryservice
