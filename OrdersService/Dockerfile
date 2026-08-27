@@ -7,7 +7,6 @@ WORKDIR /src
 COPY ["OrdersService.csproj", "./"]
 RUN dotnet restore "OrdersService.csproj"
 COPY . .
-RUN dotnet build "OrdersService.csproj" -c Release -o /app/build
 
 FROM build AS publish
 RUN dotnet publish "OrdersService.csproj" -c Release -o /app/publish
