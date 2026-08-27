@@ -37,6 +37,13 @@ public class OrdersController : ControllerBase
 
     // POST /api/orders
     // pattern: request DTO/command model
+    // Return type breakdown: Task == js promise, the type we await to unwrap for async return types
+    // ActionResult<Order> is a generic type. It is NOT an ActionResult
+    // ActionResult<T> means the type COULD be EITHER type T OR an ActionResult
+    // think of ActionResult<T> like:
+    // "type is EITHER ActionResult derived subclass
+    // (i.e CreatedAtActionResult, OkObjectResult, etc.)
+    // OR T"
     [HttpPost]
     public async Task<ActionResult<Order>> CreateOrder(CreateOrderRequest request)
     {
@@ -68,7 +75,7 @@ public class OrdersController : ControllerBase
             return StatusCode(502, "Inventory service returned an unexpected error.");
         }
 
-        // Deserialize the product from the response
+        // Deserialize the product from the response of InventoryService
         // tell compiler what shape to expect, maps JSON fields onto C# properties ProductDto. Matches shape of Product type.
         // Dto = data transfer object. 
         // Microservice principle: do not reference code of other services/projects/modules.
@@ -105,6 +112,8 @@ public class OrdersController : ControllerBase
             order.Status = "Rejected";
         }
 
+        // notice: only oorder gets added to sqlexpress (or InMemoryDB for testing)
+        // ProductDto is just for deserializing JSON that comes back over HTTP from InventoryService
         _context.Orders.Add(order);
         await _context.SaveChangesAsync();
 
