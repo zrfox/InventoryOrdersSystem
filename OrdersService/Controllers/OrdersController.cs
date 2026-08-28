@@ -26,7 +26,10 @@ public class OrdersController : ControllerBase
         return await _context.Orders.ToListAsync();
     }
 
-    // GET /api/orders/5
+    // GET /api/orders/id
+    // using a database id in the url is not best practice since it reveals information about the database
+    // for instance, it makes the data enumerable. GUID can work as an alternative. 
+    // However, fine for this application's purposes.
     [HttpGet("{id}")]
     public async Task<ActionResult<Order>> GetOrder(int id)
     {
