@@ -15,6 +15,7 @@ services:
     environment:
       - ConnectionStrings__InventoryDb=Server=sqlserver;Database=InventoryDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True
       - InventoryApiKey=${InventoryApiKey}
+      - ASPNETCORE_URLS=http://+:8080
     depends_on:
       - sqlserver
 
@@ -27,6 +28,7 @@ services:
       - ConnectionStrings__OrdersDb=Server=sqlserver;Database=OrdersDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True
       - InventoryServiceUrl=http://inventoryservice:8080
       - InventoryApiKey=${InventoryApiKey}
+      - ASPNETCORE_URLS=http://+:8080
     depends_on:
       - sqlserver
       - inventoryservice
