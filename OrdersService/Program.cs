@@ -82,14 +82,17 @@ builder.Services.AddHttpClient("InventoryService", client =>
 
 var app = builder.Build();
 
-// need to keep Swagger in dev mode when implementing security. 
+// need to keep Swagger in dev mode when implementing security (you don't want to expose api) 
+// however, this project is a demonstration and not a real application for release
+app.UseSwagger();
+app.UseSwaggerUI();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
+    // keep exception page in dev only to avoid leaking stack trace.
     app.UseDeveloperExceptionPage();
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    
 }
 else
 {
@@ -104,20 +107,13 @@ else
     });
 }
 
-// do i need this or not? 
-// read that the issue was usehttpsredirection before middleware meant redirect on every request which
-// means the test would end up pointing to nothing due to redirection.
-// idk if this is actually an issue
-if (!app.Environment.IsEnvironment("Testing"))
-{
-    app.UseHttpsRedirection();
-}
+app.UseHttpsRedirection();
 
-// wires ApiKeyMiddleware eclass into request pipeline. ASP.NET Core
+// wires ApiKeyMiddleware class into request pipeline. ASP.NET Core
 // framework calls InvokeAync automatically for every incoming
 // HTTP request once reaching that point in the pipeline
-// UseMiddleware expenct constructor taking RequestDelegate next and a method
-// named exactly InvookeAsync (or Invoke). 
+// UseMiddleware expects constructor taking RequestDelegate next and a method
+// named exactly InvokeAsync (or Invoke). 
 app.UseMiddleware<OrdersService.Middleware.ApiKeyMiddleware>();
 
 app.UseAuthorization();
