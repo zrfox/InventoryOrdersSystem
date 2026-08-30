@@ -82,6 +82,12 @@ builder.Services.AddHttpClient("InventoryService", client =>
 
 var app = builder.Build();
 
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
+    db.Database.Migrate();   // or EnsureCreated() if you have no migrations
+}
+
 app.UseHttpsRedirection();
 
 // need to keep Swagger in dev mode when implementing security (you don't want to expose api) 
