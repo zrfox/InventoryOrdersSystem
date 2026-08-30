@@ -61,7 +61,7 @@ builder.Services.AddSwaggerGen(options =>
 // automatically every time a request needs one. <- that's what dep injection is -
 // controller declares what it needs, continaer decides how to build it, all based on what's registered here.
 builder.Services.AddDbContext<OrdersDbContext>(options =>
-options.UseSqlServer(builder.Configuration.GetConnectionString("OrdersDb")));
+    options.UseSqlServer(builder.Configuration.GetConnectionString("OrdersDb")));
 
 // Registers named HttpClient config when code calls _httpClientFactory.CreateClient("InventoryService")
 // - which is exactly what OrdersController does. 
@@ -81,6 +81,8 @@ builder.Services.AddHttpClient("InventoryService", client =>
 // before hitting controller.
 
 var app = builder.Build();
+
+app.UseHttpsRedirection();
 
 // need to keep Swagger in dev mode when implementing security (you don't want to expose api) 
 // however, this project is a demonstration and not a real application for release
@@ -107,7 +109,6 @@ else
     });
 }
 
-app.UseHttpsRedirection();
 
 // wires ApiKeyMiddleware class into request pipeline. ASP.NET Core
 // framework calls InvokeAync automatically for every incoming

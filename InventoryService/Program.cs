@@ -53,6 +53,9 @@ builder.Services.AddDbContext<InventoryDbContext>(options =>
 
 var app = builder.Build();
 
+app.UseHttpsRedirection();
+
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -75,7 +78,6 @@ else
 }
 
 
-app.UseHttpsRedirection();
 
 app.UseMiddleware<InventoryService.Middleware.ApiKeyMiddleware>();
 
