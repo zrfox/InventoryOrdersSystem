@@ -56,7 +56,10 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
-    db.Database.Migrate();   // or EnsureCreated() if you have no migrations
+    if (db.Database.IsSqlServer())
+    {
+        db.Database.Migrate();   // or EnsureCreated() if you have no migrations
+    }
 }
 
 app.UseHttpsRedirection();
