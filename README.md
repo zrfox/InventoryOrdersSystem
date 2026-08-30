@@ -91,7 +91,7 @@ How to run application with Docker:
 
 * run command: docker compose up -d --build
 
-  * 3 containers should be running: sqlserver-1, inventoryservice-1, ordersservice-1
+  * 3 containers should be running: sqlserver, inventoryservice, ordersservice
 * SWAGGER:
 
   * open a browser to access the endpoints with swagger
