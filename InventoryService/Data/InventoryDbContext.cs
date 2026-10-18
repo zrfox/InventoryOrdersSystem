@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using InventoryService.Models;
 
 namespace InventoryService.Data
@@ -9,5 +9,13 @@ namespace InventoryService.Data
             : base(options) { }
 
         public DbSet<Product> Products => Set<Product>();
+        public DbSet<StockRestoration> StockRestorations => Set<StockRestoration>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StockRestoration>()
+                .HasIndex(r => r.OperationId)
+                .IsUnique();
+        }
     }
 }

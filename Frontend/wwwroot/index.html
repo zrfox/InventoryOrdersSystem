@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inventory &amp; Orders</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Inventory &amp; Orders</h1>
+    <div class="services">
+      <span id="inventory-status" class="pill">InventoryService: checking…</span>
+      <span id="orders-status" class="pill">OrdersService: checking…</span>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <section class="card">
+      <h2>Products</h2>
+      <p class="hint">Stock is read from InventoryService on every refresh; it is never calculated in the browser.</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Name</th><th class="num">Price</th><th class="num">In stock</th></tr>
+        </thead>
+        <tbody id="products-body"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Place an order</h2>
+      <form id="order-form">
+        <label>Product
+          <select id="product-select" required></select>
+        </label>
+        <label>Quantity
+          <input id="quantity-input" type="number" min="1" step="1" value="1" required>
+        </label>
+        <button id="submit-button" type="submit">Submit order</button>
+      </form>
+    </section>
+
+    <section class="card wide">
+      <h2>Orders</h2>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Product</th><th class="num">Qty</th><th>Created</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="orders-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <dialog id="popup">
+    <h3 id="popup-title"></h3>
+    <p id="popup-message"></p>
+    <form method="dialog"><button>OK</button></form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
