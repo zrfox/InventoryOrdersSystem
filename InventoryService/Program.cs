@@ -50,17 +50,9 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddDbContext<InventoryDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("InventoryDb")));
 
+builder.Services.AddSingleton<InventoryService.Services.ProductLocks>();
 
 var app = builder.Build();
-
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
-    if (db.Database.IsSqlServer())
-    {
-        db.Database.Migrate();   // or EnsureCreated() if you have no migrations
-    }
-}
 
 app.UseHttpsRedirection();
 

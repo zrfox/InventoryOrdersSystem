@@ -29,6 +29,22 @@ services:
       - InventoryServiceUrl=http://inventoryservice:8080
       - InventoryApiKey=${InventoryApiKey}
       - ASPNETCORE_URLS=http://+:8080
+      - CancellationRetry__IntervalSeconds=15
+      - CancellationRetry__MaxPending=5
     depends_on:
       - sqlserver
       - inventoryservice
+
+  frontend:
+    build:
+      context: ./Frontend
+    ports:
+      - "5211:8080"
+    environment:
+      - InventoryServiceUrl=http://inventoryservice:8080
+      - OrdersServiceUrl=http://ordersservice:8080
+      - InventoryApiKey=${InventoryApiKey}
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      - inventoryservice
+      - ordersservice

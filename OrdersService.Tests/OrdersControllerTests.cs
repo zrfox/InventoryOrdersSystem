@@ -1,196 +1,248 @@
-﻿using System.Net;
-using System.Text.Json;
+using System.Net;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Moq;
-using Moq.Protected;
-using OrdersService.Controllers;
-using OrdersService.Data;
 using OrdersService.Models;
 using Xunit;
 
 namespace OrdersService.Tests;
 
-// unit tests
 public class OrdersControllerTests
 {
-    // allows passing private member to both tests to set serializer
-    // naming policy from default Pascal to camelCase
-    private readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
-    // creates a context that uses a database in RAM instead of an actual external database. 
-    // builds options first and then returns proper context passing options
-    // guid prevents collission, is the inMemory database name
-    // new guid every time getinmemorycontexxt is called - keeps tests from colliding
-    private OrdersDbContext GetInMemoryContext()
-    {
-        var options = new DbContextOptionsBuilder<OrdersDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        return new OrdersDbContext(options);
-    }
-
-    // keeps IHttpClientFactory initialization code in one location as a private member
-    private IHttpClientFactory CreateMockHttpClientFactory(HttpStatusCode statusCode, object? responseBody)
-    {
-        var handlerMock = new Mock<HttpMessageHandler>();
-
-        handlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-             {
-                 StatusCode = statusCode,
-                 Content = new StringContent(JsonSerializer.Serialize(responseBody, _jsonOptions))
-             });
-
-        var httpClient = new HttpClient(handlerMock.Object)
-        {
-            BaseAddress = new Uri("http://fake-inventory-service/")
-        };
-
-        var factoryMock = new Mock<IHttpClientFactory>();
-        factoryMock.Setup(f => f.CreateClient("InventoryService")).Returns(httpClient);
-
-        return factoryMock.Object;
-    }
+    // ------------------------------------------------------------------ create
 
     [Fact]
-    public async Task CreateOrder_SufficientStock_ReturnsConfirmed()
+    public async Task CreateOrder_SufficientStock_ReturnsConfirmed_AndReservesStock()
     {
-        // create DbContext wired to an in-memory database
-        var context = GetInMemoryContext();
-        
-        // create fakeProduct object for fake HTTP response body from InventoryService
-        var fakeProduct = new ProductDto { Id = 1, Name = "Widget", StockQuantity = 50, Price = 9.99m };
+        var h = new TestHarness((_, _) => Responses.Applied(1, 45, "k"));
 
-        // create factory that will give OrdersController a fake HttpClient client (for faking InventoryService HTTP response)
-        var factory = CreateMockHttpClientFactory(HttpStatusCode.OK, fakeProduct);
+        var result = await h.Controller.CreateOrder(new CreateOrderRequest { ProductId = 1, Quantity = 5 });
 
-        // instance of OrdersController to call CreateOrder method
-        var controller = new OrdersController(context, factory);
+        var created = Assert.IsType<CreatedAtActionResult>(result.Result);
+        var order = Assert.IsType<Order>(created.Value);
+        Assert.Equal(OrderStatus.Confirmed, order.Status);
+        Assert.False(string.IsNullOrEmpty(order.ClientRequestId)); // server generated one
 
-        // order request to send
-        var request = new CreateOrderRequest { ProductId = 1, Quantity = 5 };
-
-        // await since accessing database/using HTTP
-        // in OrdersController.Create Order: 
-        // SaveChangesAsync() is a real async DB call (though DB is in-memory in testing case)
-        // client.GetAsync(...)/PutAsJsonAsync(...) are mocked HTTP calls-
-        // mocked calls still return a Task, so await is still required even though no real network I/O in test.
-        // await unwrwaps task, result is plain ActionResult<Order> object
-        var result = await controller.CreateOrder(request);
-
-        // synchronous now because await in last called unwrapped task into result
-        // result.Result pulls IActionResult out of wrapper
-        // (ActionResult<T> can hold either a raw T or an IActionResult [i.e. CreatedAtActionResult/NotFoundResult/etc.]
-        // .Result gives you the IActionResult, as opposed to a T, if Result is an IActionResult.
-        // CreatedAtActionResult is an IActionResult that DESCRIBES a 201 response (something created on the server) —
-        // it's just a plain C# object right now, not an actual HTTP response, since this test calls the controller
-        // directly and never runs it through the real ASP.NET Core pipeline that would turn it into real bytes on a wire.
-        // IActionResult is an interface that means "I know how to become an HTTP response."
-        // And ActionResult is the abstract base class implementing IActionResult.
-        // so, CreatedAtActionResult describes an HTTP response that alerts us of a 201
-        // (As opposed to an OkObjectResult [200], or NotFoundObjectResult [404], both of which are also IActionResults)
-        // CreatedAtActionResult is different from OkObjectResult in that its constructor takes an action name (nameof(GetOrder))
-        // and route values (new { id = order.Id }) and generates a Location header pointing at the URL of the new resource.
-        // this is a REST convention - tell the client where to find the thing it just created.
-        // OkObjectResult doesn't do this since 200 doesn't mean "a new thing exists, here's how to get it."
-        var createdResult = Assert.IsType<CreatedAtActionResult>(result.Result);
-
-        // assert that Value of createdResult is type Order
-        var order = Assert.IsType<Order>(createdResult.Value);
-
-        // assert status is confirmed (means OrdersController succeeded creating order, implying stock exists)
-        Assert.Equal("Confirmed", order.Status);
+        var request = Assert.Single(h.Handler.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("/api/stock-adjustments", request.Path);
+        var body = TestHarness.ParseBody(request.Body);
+        Assert.Equal(1, body.GetProperty("productId").GetInt32());
+        Assert.Equal(-5, body.GetProperty("quantityChange").GetInt32());  // reservation = negative change
     }
 
     [Fact]
     public async Task CreateOrder_InsufficientStock_ReturnsRejected()
     {
-        // new InMemoryContext prevents us from accessing fake orders in other inMemory databases
-        var context = GetInMemoryContext();
-        
-        // fakeProduct serialized into JSON to fake HTTP response body from InventoryService,
-        // ProductDto never touches InMemory db, only the Order would be stored there.
-        var fakeProduct = new ProductDto { Id = 1, Name = "Widget", StockQuantity = 2, Price = 9.99m };
-        var factory = CreateMockHttpClientFactory(HttpStatusCode.OK, fakeProduct);
+        var h = new TestHarness((_, _) => Responses.InsufficientStock(2));
 
-        var controller = new OrdersController(context, factory);
-        var request = new CreateOrderRequest { ProductId = 1, Quantity = 10 };
+        var result = await h.Controller.CreateOrder(new CreateOrderRequest { ProductId = 1, Quantity = 10 });
 
-        var result = await controller.CreateOrder(request);
-
-        var createdResult = Assert.IsType<CreatedAtActionResult>(result.Result);
-        var order = Assert.IsType<Order>(createdResult.Value);
-        Assert.Equal("Rejected", order.Status);
+        var created = Assert.IsType<CreatedAtActionResult>(result.Result);
+        var order = Assert.IsType<Order>(created.Value);
+        Assert.Equal(OrderStatus.Rejected, order.Status);
+        Assert.Single(h.Context.Orders); // rejected orders are still persisted
     }
 
     [Fact]
     public async Task CreateOrder_InvalidProductId_ProductNotFound()
     {
-        // this test will never access the database 
-        // OrdersController returns with Not Found message before touching db.
-        // but we still need the context to create and call the controller.
-        var context = GetInMemoryContext();
+        var h = new TestHarness((_, _) => Responses.NotFound());
 
-        // create factory for creating clients with controller object 
-        // why status code OK? why isn't it not found?  
-        // object null since we don't need to return an object in HTTP body for 404
-        // the MockHttpClientFactory mimics InventoryService's response of no product found
-        // allows us to test how OrdersController reacts to this response.
-        var factory = CreateMockHttpClientFactory(HttpStatusCode.NotFound, null);
+        var result = await h.Controller.CreateOrder(new CreateOrderRequest { ProductId = 1, Quantity = 1 });
 
-        // new OrdersController object takes the context for the InMemory db and factory
-        // factory lets controller create HttpClients to make requests
-        var controller = new OrdersController(context, factory);
+        var notFound = Assert.IsType<NotFoundObjectResult>(result.Result);
+        var error = Assert.IsType<ErrorResponse>(notFound.Value);
+        Assert.Equal("Product 1 not found in inventory.", error.Error);
+        Assert.Empty(h.Context.Orders);
+    }
 
-        // request for non-existent object 
-        var request = new CreateOrderRequest { ProductId = 1, Quantity = 1 };
+    [Fact]
+    public async Task CreateOrder_InventoryUnavailable_Returns503_AndSavesNothing()
+    {
+        var h = new TestHarness((_, _) => Responses.Down());
 
-        var result = await controller.CreateOrder(request);
+        var result = await h.Controller.CreateOrder(new CreateOrderRequest { ProductId = 1, Quantity = 1 });
 
-        var notFoundResult = Assert.IsType<NotFoundObjectResult>(result.Result);
-        Assert.Equal("Product 1 not found in inventory.", notFoundResult.Value);
+        var status = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(503, status.StatusCode);
+        Assert.Empty(h.Context.Orders);
+    }
+
+    [Fact]
+    public async Task CreateOrder_SameClientRequestIdTwice_ReturnsSameOrder_AndReservesOnce()
+    {
+        var h = new TestHarness((_, _) => Responses.Applied(1, 45, "k"));
+        var request = new CreateOrderRequest { ProductId = 1, Quantity = 5, ClientRequestId = "double-click-123" };
+
+        var first = await h.Controller.CreateOrder(request);
+        var second = await h.Controller.CreateOrder(request);
+
+        var created = Assert.IsType<CreatedAtActionResult>(first.Result);
+        var firstOrder = Assert.IsType<Order>(created.Value);
+
+        var ok = Assert.IsType<OkObjectResult>(second.Result);      // 200, not 201
+        var secondOrder = Assert.IsType<Order>(ok.Value);
+
+        Assert.Equal(firstOrder.Id, secondOrder.Id);
+        Assert.Single(h.Context.Orders);
+        Assert.Single(h.Handler.Requests);                          // inventory was only asked once
+    }
+
+    [Fact]
+    public async Task CreateOrder_ReservationAlreadyApplied_IsStillConfirmed()
+    {
+        // Reservation succeeded on an earlier attempt whose response was lost: the retry
+        // must confirm the order without Inventory decrementing a second time.
+        var h = new TestHarness((_, _) => Responses.AlreadyApplied(1, 45, "k"));
+
+        var result = await h.Controller.CreateOrder(new CreateOrderRequest { ProductId = 1, Quantity = 5, ClientRequestId = "retry-1" });
+
+        var created = Assert.IsType<CreatedAtActionResult>(result.Result);
+        Assert.Equal(OrderStatus.Confirmed, Assert.IsType<Order>(created.Value).Status);
+    }
+
+    // ------------------------------------------------------------------ cancel
+
+    private static async Task<Order> SeedOrderAsync(TestHarness h, string status, int quantity = 2)
+    {
+        var order = new Order { ProductId = 1, Quantity = quantity, DateCreated = DateTime.UtcNow, Status = status, ClientRequestId = Guid.NewGuid().ToString("N") };
+        if (status == OrderStatus.CancellationPending) order.CancellationRequestedAt = DateTime.UtcNow;
+        h.Context.Orders.Add(order);
+        await h.Context.SaveChangesAsync();
+        return order;
+    }
+
+    [Fact]
+    public async Task CancelOrder_Confirmed_RestoresStock_AndMarksCancelled()
+    {
+        var h = new TestHarness((_, _) => Responses.Applied(1, 12, "order-1-cancel"));
+        var order = await SeedOrderAsync(h, OrderStatus.Confirmed, quantity: 3);
+
+        var result = await h.Controller.CancelOrder(order.Id);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        Assert.Equal(OrderStatus.Cancelled, Assert.IsType<Order>(ok.Value).Status);
+
+        var request = Assert.Single(h.Handler.Requests);
+        var body = TestHarness.ParseBody(request.Body);
+        Assert.Equal(+3, body.GetProperty("quantityChange").GetInt32());                 // stock returned
+        Assert.Equal($"order-{order.Id}-cancel", body.GetProperty("referenceKey").GetString());
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.Cancelled)]
+    [InlineData(OrderStatus.Rejected)]
+    [InlineData(OrderStatus.CancellationPending)]
+    public async Task CancelOrder_NotConfirmed_ReturnsConflict_AndNeverCallsInventory(string status)
+    {
+        var h = new TestHarness((_, _) => Responses.Applied(1, 12, "k"));
+        var order = await SeedOrderAsync(h, status);
+
+        var result = await h.Controller.CancelOrder(order.Id);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
+        Assert.IsType<ErrorResponse>(conflict.Value);
+        Assert.Empty(h.Handler.Requests);
+        Assert.Equal(status, (await h.Context.Orders.FindAsync(order.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task CancelOrder_UnknownOrder_ReturnsNotFound()
+    {
+        var h = new TestHarness((_, _) => Responses.Applied(1, 12, "k"));
+
+        var result = await h.Controller.CancelOrder(999);
+
+        Assert.IsType<NotFoundObjectResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task CancelOrder_InventoryDown_BecomesCancellationPending_Returns202()
+    {
+        var h = new TestHarness((_, _) => Responses.Down());
+        var order = await SeedOrderAsync(h, OrderStatus.Confirmed);
+
+        var result = await h.Controller.CancelOrder(order.Id);
+
+        var accepted = Assert.IsType<AcceptedResult>(result.Result);
+        var pending = Assert.IsType<Order>(accepted.Value);
+        Assert.Equal(OrderStatus.CancellationPending, pending.Status);
+        Assert.NotNull(pending.CancellationRequestedAt);
+    }
+
+    [Fact]
+    public async Task CancelOrder_InventoryDown_MaxPendingReached_Returns503_AndStaysConfirmed()
+    {
+        var h = new TestHarness((_, _) => Responses.Down(), maxPending: 5);
+        for (var i = 0; i < 5; i++) await SeedOrderAsync(h, OrderStatus.CancellationPending);
+        var order = await SeedOrderAsync(h, OrderStatus.Confirmed);
+
+        var result = await h.Controller.CancelOrder(order.Id);
+
+        var status = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(503, status.StatusCode);
+        Assert.Contains("maximum of 5", Assert.IsType<ErrorResponse>(status.Value).Error);
+        Assert.Equal(OrderStatus.Confirmed, (await h.Context.Orders.FindAsync(order.Id))!.Status);
+    }
+
+    // ------------------------------------------------------------------ undo
+
+    [Fact]
+    public async Task UndoCancellation_Pending_RevertsToConfirmed()
+    {
+        // Inventory is down: the lookup fails, which must not block the undo.
+        var h = new TestHarness((_, _) => Responses.Down());
+        var order = await SeedOrderAsync(h, OrderStatus.CancellationPending);
+
+        var result = await h.Controller.UndoCancellation(order.Id);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var restored = Assert.IsType<Order>(ok.Value);
+        Assert.Equal(OrderStatus.Confirmed, restored.Status);
+        Assert.Null(restored.CancellationRequestedAt);
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.Confirmed)]
+    [InlineData(OrderStatus.Cancelled)]
+    [InlineData(OrderStatus.Rejected)]
+    public async Task UndoCancellation_NotPending_ReturnsConflict(string status)
+    {
+        var h = new TestHarness((_, _) => Responses.NotFound());
+        var order = await SeedOrderAsync(h, status);
+
+        var result = await h.Controller.UndoCancellation(order.Id);
+
+        Assert.IsType<ConflictObjectResult>(result.Result);
+        Assert.Equal(status, (await h.Context.Orders.FindAsync(order.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task UndoCancellation_WhenInventoryAlreadyRestoredStock_FinalizesAsCancelled()
+    {
+        // GET /api/stock-adjustments/order-{id}-cancel -> 200 means the stock already went back.
+        var h = new TestHarness((req, _) => req.Method == HttpMethod.Get
+            ? Responses.Json200(new { referenceKey = "order-1-cancel" })
+            : Responses.Down());
+        var order = await SeedOrderAsync(h, OrderStatus.CancellationPending);
+
+        var result = await h.Controller.UndoCancellation(order.Id);
+
+        Assert.IsType<ConflictObjectResult>(result.Result);
+        Assert.Equal(OrderStatus.Cancelled, (await h.Context.Orders.FindAsync(order.Id))!.Status);
+    }
+
+    // ------------------------------------------------------------------ pending count
+
+    [Fact]
+    public async Task GetPendingCancellations_ReportsCountAndMax()
+    {
+        var h = new TestHarness((_, _) => Responses.Down(), maxPending: 5);
+        await SeedOrderAsync(h, OrderStatus.CancellationPending);
+        await SeedOrderAsync(h, OrderStatus.CancellationPending);
+        await SeedOrderAsync(h, OrderStatus.Confirmed);
+
+        var result = await h.Controller.GetPendingCancellations();
+
+        Assert.Equal(new PendingCancellationsResponse(2, 5), result.Value);
     }
 }
-
-// Note on Descriptor Objects and ObjectResult derived classes like CreatedAtActionResult
-// *Interface: IActionResult. ActionResult then implements this interface.
-// *Chain of descendance: ActionResult -> ObjectResult -> CreatedAtActionResult
-
-// "Descriptor object" = an object whose job is to hold the info needed to produce
-// something else later, rather than being that something itself.
-// CreatedAtActionResult isn't the HTTP response — it's a bundle of data
-// (StatusCode=201, Value=order, action name, route values) that the real
-// ASP.NET Core pipeline WOULD read to build the actual response, if this
-// test ever ran through that pipeline (it doesn't — we call the controller directly).
-// Like a shipping label filled out but not yet attached to a package: fully
-// specifies where it'd go and what's inside, but nothing has shipped.
-
-/*
- * 
- * so, i guess IEActionResult interface is defined by its (only?) function ExecuteResultAsync 
- * and everythign derived from this revolves around the ability to do that with the intention 
- * of producing an HTTP response
-
-
-
- * public interface IActionResult
-{
-    Task ExecuteResultAsync(ActionContext context);
-}
- * That's the entire contract. Everything in that hierarchy — ActionResult, 
- * ObjectResult, CreatedAtActionResult, NotFoundObjectResult, OkObjectResult, all of them — 
- * exists purely to provide different implementations of that one method, each writing a 
- * different status code/headers/body combination to the actual HttpResponse when it's 
- * invoked for real by the framework
- * 
- * contract = interface. interface is just a promise that you have the same members
- * 
- * */
