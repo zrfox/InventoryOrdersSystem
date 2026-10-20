@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using OrdersService.Data;
-
+using OrdersService.Services;
 DotNetEnv.Env.Load(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".env"));
 
 // WebApplication is the real, running app itself - the object Program.cs builds and runs
@@ -75,6 +75,14 @@ builder.Services.AddHttpClient("InventoryService", client =>
     client.DefaultRequestHeaders.Add("X-Api-Key", builder.Configuration["InventoryApiKey"]);
 });
 
+// Cancellation workflow. Optional overrides via a "Cancellation" config section
+// (MaxPending, RetryIntervalSeconds, InventoryTimeoutSeconds).
+builder.Services.Configure<CancellationOptions>(builder.Configuration.GetSection("Cancellation"));
+builder.Services.AddSingleton<CancellationGate>();
+builder.Services.AddSingleton<IdempotencyLocks>();
+builder.Services.AddScoped<OrderCancellationService>();
+// Retries CancellationPending orders for as long as the service runs, starting at startup.
+builder.Services.AddHostedService<CancellationRetryWorker>();
 
 // app phase - middleware pipeline
 // every incoming request flows through each of these

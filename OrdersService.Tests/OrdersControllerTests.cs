@@ -73,7 +73,7 @@ public class OrdersControllerTests
         var factory = CreateMockHttpClientFactory(HttpStatusCode.OK, fakeProduct);
 
         // instance of OrdersController to call CreateOrder method
-        var controller = new OrdersController(context, factory);
+        var controller = TestSupport.CreateController(context, factory);
 
         // order request to send
         var request = new CreateOrderRequest { ProductId = 1, Quantity = 5 };
@@ -121,7 +121,7 @@ public class OrdersControllerTests
         var fakeProduct = new ProductDto { Id = 1, Name = "Widget", StockQuantity = 2, Price = 9.99m };
         var factory = CreateMockHttpClientFactory(HttpStatusCode.OK, fakeProduct);
 
-        var controller = new OrdersController(context, factory);
+        var controller = TestSupport.CreateController(context, factory);
         var request = new CreateOrderRequest { ProductId = 1, Quantity = 10 };
 
         var result = await controller.CreateOrder(request);
@@ -148,7 +148,7 @@ public class OrdersControllerTests
 
         // new OrdersController object takes the context for the InMemory db and factory
         // factory lets controller create HttpClients to make requests
-        var controller = new OrdersController(context, factory);
+        var controller = TestSupport.CreateController(context, factory);
 
         // request for non-existent object 
         var request = new CreateOrderRequest { ProductId = 1, Quantity = 1 };
