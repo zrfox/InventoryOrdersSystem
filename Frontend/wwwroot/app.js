@@ -1,396 +1,547 @@
-(() => {
-  'use strict';
+'use strict';
 
-  const INVENTORY_API = '/inventory-api/api';
-  const ORDERS_API = '/orders-api/api';
-  const REFRESH_INTERVAL_MS = 5000;
+const POLL_INTERVAL_MS = 4000;
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-  const $ = (selector) => document.querySelector(selector);
-  const els = {
-    invStatus: $('#inventory-status'),
-    ordStatus: $('#orders-status'),
-    productsBody: $('#products-body'),
-    ordersBody: $('#orders-body'),
-    productSelect: $('#order-product'),
-    orderQty: $('#order-quantity'),
-    orderForm: $('#order-form'),
-    orderSubmit: $('#order-submit'),
-    productForm: $('#product-form'),
-    productSubmit: $('#product-submit'),
-    pendingCount: $('#pending-count'),
-    retryBtn: $('#retry-btn'),
-    refreshProducts: $('#refresh-products'),
-    refreshOrders: $('#refresh-orders'),
-    dialog: $('#error-dialog'),
-    dialogTitle: $('#error-title'),
-    dialogMessage: $('#error-message'),
-    toasts: $('#toasts'),
+const $ = (id) => document.getElementById(id);
+const ui = {
+  inventoryStatus: $('inventory-status'),
+  ordersStatus: $('orders-status'),
+  banner: $('banner'),
+  productsBody: $('products-body'),
+  ordersBody: $('orders-body'),
+  productForm: $('product-form'),
+  productName: $('product-name-input'),
+  productPrice: $('product-price-input'),
+  productStock: $('product-stock-input'),
+  productSubmit: $('product-submit-button'),
+  form: $('order-form'),
+  productSelect: $('product-select'),
+  quantity: $('quantity-input'),
+  submit: $('submit-button'),
+  toast: $('toast'),
+  popup: $('popup'),
+  popupTitle: $('popup-title'),
+  popupMessage: $('popup-message'),
+};
+
+const state = {
+  products: [],             // exactly what InventoryService returned last time
+  inventoryUp: null,        // null = not known yet
+  orders: [],
+  ordersUp: null,
+  productNames: new Map(),  // names only (never stock), so orders stay readable while Inventory is down
+  busyOrders: new Set(),    // order ids with a cancel/undo request in flight
+  submitting: false,
+  addingProduct: false,
+  pendingSubmission: null,  // { key, fingerprint } of a submission whose outcome isn't known yet
+  stockEdit: null,          // the one open stock editor: { productId, expected, row, input, warning, saveButton, saving }
+};
+
+// ---------- talking to the server ----------
+
+class ApiError extends Error {
+  constructor(message, status, body) {
+    super(message);
+    this.status = status; // 0 = no response at all
+    this.body = body;
+  }
+}
+
+async function api(path, options = {}) {
+  let response;
+  try {
+    response = await fetch(path, { cache: 'no-store', ...options });
+  } catch {
+    throw new ApiError('The front-end server could not be reached.', 0, null);
+  }
+
+  const text = await response.text();
+  let body = null;
+  if (text) {
+    try { body = JSON.parse(text); } catch { body = text; }
+  }
+
+  if (!response.ok) throw new ApiError(describeError(body, response.status), response.status, body);
+  return { status: response.status, body };
+}
+
+function describeError(body, status) {
+  if (typeof body === 'string' && body.length <= 300 && !body.trimStart().startsWith('<')) return body;
+  if (body && typeof body === 'object') {
+    if (typeof body.error === 'string') return body.error;
+    if (typeof body.message === 'string') return body.message;
+    if (body.errors && typeof body.errors === 'object') {
+      const messages = Object.values(body.errors).flat().filter((m) => typeof m === 'string');
+      if (messages.length) return messages.join(' ');
+    }
+    if (typeof body.detail === 'string') return body.detail;
+    if (typeof body.title === 'string') return body.title;
+  }
+  return `Request failed (HTTP ${status}).`;
+}
+
+function newIdempotencyKey() {
+  if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Runs fn at most once at a time; a call made while it is running triggers one more run afterwards,
+// so a refresh requested after an action never ends up showing data from before the action.
+function coalesced(fn) {
+  let running = null;
+  let again = false;
+  return function run() {
+    if (running) { again = true; return running; }
+    running = (async () => {
+      try {
+        do { again = false; await fn(); } while (again);
+      } finally {
+        running = null;
+      }
+    })();
+    return running;
   };
+}
 
-  const state = {
-    products: [],
-    orders: [],
-    pending: { count: 0, max: 5 },
-    orderInFlight: false,
-    clientRequestId: newRequestId(), // rotated only after a definitive answer
-    busyOrders: new Set(),
-    refreshing: false,
-  };
+const refreshProducts = coalesced(async () => {
+  try {
+    const { body } = await api('/api/products');
+    state.products = Array.isArray(body) ? body : [];
+    state.inventoryUp = true;
+    for (const p of state.products) state.productNames.set(p.id, p.name);
+  } catch {
+    state.inventoryUp = false;
+    state.products = []; // never keep showing stock numbers we can't confirm
+  }
+  render();
+});
 
-  class ApiError extends Error {
-    constructor(status, message) {
-      super(message);
-      this.name = 'ApiError';
-      this.status = status;
-    }
+const refreshOrders = coalesced(async () => {
+  try {
+    const { body } = await api('/api/orders');
+    state.orders = Array.isArray(body) ? body : [];
+    state.ordersUp = true;
+  } catch {
+    state.ordersUp = false;
+  }
+  render();
+});
+
+function refreshAll() {
+  return Promise.all([refreshProducts(), refreshOrders()]);
+}
+
+// ---------- products ----------
+
+ui.productForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (state.addingProduct) return; // ignore extra clicks while one is in flight
+
+  const name = ui.productName.value.trim();
+  const price = Number(ui.productPrice.value);
+  const stockQuantity = Number(ui.productStock.value);
+  if (!name || name.length > 100) {
+    showPopup('Product not added', 'Enter a name of up to 100 characters.');
+    return;
+  }
+  if (!(price > 0)) {
+    showPopup('Product not added', 'Enter a price greater than zero.');
+    return;
+  }
+  if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
+    showPopup('Product not added', 'Initial stock must be a whole number of 0 or more.');
+    return;
   }
 
-  function newRequestId() {
-    if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-    return 'req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  state.addingProduct = true;
+  render();
+
+  try {
+    const { body: product } = await api('/api/products', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name, price, stockQuantity }),
+    });
+    showToast(`Product "${product.name}" added with ${product.stockQuantity} in stock.`);
+    ui.productForm.reset();
+  } catch (err) {
+    reportError('Product not added', err);
+  } finally {
+    state.addingProduct = false;
+    render();
+    refreshProducts();
+  }
+});
+
+function startStockEdit(product) {
+  const input = el('input', {
+    type: 'number', min: 0, step: 1, className: 'stock-input', value: String(product.stockQuantity),
+  });
+  const warning = el('div', { className: 'hint warn', hidden: true });
+  const saveButton = el('button', { type: 'button', textContent: 'Save', onclick: () => saveStockEdit() });
+  const cancelButton = el('button', {
+    type: 'button', className: 'secondary', textContent: 'Cancel', onclick: () => { closeStockEdit(); render(); },
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); saveStockEdit(); }
+    if (event.key === 'Escape') { closeStockEdit(); render(); }
+  });
+
+  // This row is reused as-is on every re-render, so polling never wipes what is being typed.
+  const row = el('tr', { className: 'editing' },
+    el('td', { textContent: product.id }),
+    el('td', { textContent: product.name }),
+    el('td', { className: 'num', textContent: money.format(product.price) }),
+    el('td', { className: 'num' }, input, warning),
+    el('td', {}, saveButton, ' ', cancelButton));
+
+  // "expected" is the stock the user was looking at; the server refuses the save if it has moved.
+  state.stockEdit = { productId: product.id, expected: product.stockQuantity, row, input, warning, saveButton, saving: false };
+  render();
+  input.focus();
+  input.select();
+}
+
+function closeStockEdit() {
+  state.stockEdit = null;
+}
+
+async function saveStockEdit() {
+  const edit = state.stockEdit;
+  if (!edit || edit.saving) return; // ignore double clicks / Enter + click
+
+  const stockQuantity = Number(edit.input.value);
+  if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
+    showPopup('Stock not saved', 'Enter a whole number of 0 or more.');
+    return;
   }
 
-  // ---------------------------------------------------------------- HTTP
-  async function api(path, { method = 'GET', body } = {}) {
-    const init = { method, headers: {} };
-    if (body !== undefined) {
-      init.headers['Content-Type'] = 'application/json';
-      init.body = JSON.stringify(body);
-    }
+  edit.saving = true;
+  edit.input.disabled = true;
+  edit.saveButton.disabled = true;
+  edit.saveButton.textContent = 'Saving…';
+  render();
 
-    let res;
-    try {
-      res = await fetch(path, init);
-    } catch (err) {
-      throw new ApiError(0, 'Could not reach the front-end server: ' + err.message);
+  try {
+    await api(`/api/products/${edit.productId}/stock`, {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ expectedStockQuantity: edit.expected, stockQuantity }),
+    });
+    showToast(`Stock of ${state.productNames.get(edit.productId) || `product ${edit.productId}`} set to ${stockQuantity}.`);
+    closeStockEdit();
+  } catch (err) {
+    reportError('Stock not saved', err);
+    if (err.status === 409) {
+      // The stock moved under us; the server said no and told us the current value.
+      // Close the editor so the next edit starts from the fresh number.
+      closeStockEdit();
+    } else {
+      edit.saving = false;
+      edit.input.disabled = false;
+      edit.saveButton.disabled = false;
+      edit.saveButton.textContent = 'Save';
     }
+  } finally {
+    render();
+    refreshProducts();
+  }
+}
 
-    const text = await res.text();
-    let data = null;
-    if (text) {
-      try { data = JSON.parse(text); } catch { data = text; }
-    }
+// ---------- orders ----------
 
-    if (!res.ok) throw new ApiError(res.status, describeError(data, res));
-    return { status: res.status, data };
+ui.form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (state.submitting) return; // ignore extra clicks / Enter presses while one is in flight
+
+  const productId = Number(ui.productSelect.value);
+  const quantity = Number(ui.quantity.value);
+  if (!Number.isInteger(productId) || productId < 1 || !Number.isInteger(quantity) || quantity < 1) {
+    showPopup('Order not placed', 'Choose a product and a whole-number quantity of at least 1.');
+    return;
   }
 
-  function describeError(data, res) {
-    if (data && typeof data === 'object') {
-      if (data.error) return data.error;
-      if (data.errors) {
-        return Object.entries(data.errors)
-          .map(([field, messages]) => `${field}: ${[].concat(messages).join(', ')}`)
-          .join('\n');
-      }
-      if (data.title) return data.title;
+  // Same key for the same submission (including a retry after a network error), so the
+  // server can recognise a duplicate. A new key only once the server has given a clear answer.
+  const fingerprint = `${productId}:${quantity}`;
+  if (!state.pendingSubmission || state.pendingSubmission.fingerprint !== fingerprint) {
+    state.pendingSubmission = { key: newIdempotencyKey(), fingerprint };
+  }
+  const { key } = state.pendingSubmission;
+
+  state.submitting = true;
+  render();
+
+  try {
+    const { body: order } = await api('/api/orders', {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'Idempotency-Key': key },
+      body: JSON.stringify({ productId, quantity }),
+    });
+    state.pendingSubmission = null;
+
+    if (order && order.status === 'Rejected') {
+      showPopup('Order rejected', `Order #${order.id} was rejected: there is not enough stock.`);
+    } else if (order) {
+      showToast(`Order #${order.id} ${String(order.status).toLowerCase()}.`);
     }
-    if (typeof data === 'string' && data) return data;
-    return `${res.status} ${res.statusText}`;
+  } catch (err) {
+    // 4xx = the server clearly said no, nothing was created. Anything else (no response, 5xx)
+    // is unclear, so the key is kept and a retry can't create a second order.
+    if (err.status >= 400 && err.status < 500) state.pendingSubmission = null;
+    reportError('Order not placed', err);
+  } finally {
+    state.submitting = false;
+    render();
+    refreshAll();
   }
+});
 
-  // ---------------------------------------------------------------- UI helpers
-  function el(tag, attrs = {}, children = []) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(attrs)) {
-      if (key === 'class') node.className = value;
-      else if (key === 'text') node.textContent = value;
-      else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
-      else if (value !== undefined && value !== null && value !== false) node.setAttribute(key, value === true ? '' : value);
+function cancelOrder(id) {
+  return orderAction(id, `/api/orders/${id}/cancel`, `Could not cancel order #${id}`, (status) => {
+    if (status === 202) {
+      showPopup('Cancellation pending',
+        `InventoryService is not available, so order #${id} is now CancellationPending. ` +
+        'It will be cancelled automatically, and its stock returned, once InventoryService is running again. ' +
+        'Until then you can undo the cancellation.');
+    } else {
+      showToast(`Order #${id} cancelled. Stock returned to inventory.`);
     }
-    for (const child of [].concat(children)) {
-      if (child !== null && child !== undefined) node.append(child);
+  });
+}
+
+function undoCancellation(id) {
+  return orderAction(id, `/api/orders/${id}/cancel/undo`, `Could not undo the cancellation of order #${id}`, () => {
+    showToast(`Cancellation of order #${id} undone. The order is confirmed again.`);
+  });
+}
+
+async function orderAction(id, path, errorTitle, onSuccess) {
+  if (state.busyOrders.has(id)) return; // ignore double clicks
+  state.busyOrders.add(id);
+  render();
+  try {
+    const { status } = await api(path, { method: 'POST' });
+    onSuccess(status);
+  } catch (err) {
+    reportError(errorTitle, err);
+  } finally {
+    state.busyOrders.delete(id);
+    render();
+    refreshAll();
+  }
+}
+
+// ---------- rendering ----------
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  Object.assign(node, props);
+  node.append(...children);
+  return node;
+}
+
+function messageRow(columns, text) {
+  return el('tr', {}, el('td', { colSpan: columns, className: 'empty', textContent: text }));
+}
+
+const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function formatDate(value) {
+  if (!value) return '';
+  // The API sends UTC times; add the "Z" if the serializer left it off.
+  const iso = /(Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+let lastRendered = '';
+
+function render() {
+  const snapshot = JSON.stringify([
+    state.products, state.orders, state.inventoryUp, state.ordersUp,
+    [...state.busyOrders], state.submitting, state.addingProduct,
+    state.stockEdit ? [state.stockEdit.productId, state.stockEdit.saving] : null,
+  ]);
+  if (snapshot === lastRendered) return; // nothing changed: leave the page alone
+  lastRendered = snapshot;
+
+  renderStatus();
+  renderProducts();
+  renderProductSelect();
+  renderOrders();
+
+  ui.productSubmit.disabled = state.addingProduct || !state.inventoryUp;
+  ui.productSubmit.textContent = state.addingProduct ? 'Adding…' : 'Add product';
+
+  ui.submit.disabled = state.submitting || !state.inventoryUp || !state.ordersUp || state.products.length === 0;
+  ui.submit.textContent = state.submitting ? 'Submitting…' : 'Submit order';
+}
+
+function renderStatus() {
+  setPill(ui.inventoryStatus, 'InventoryService', state.inventoryUp);
+  setPill(ui.ordersStatus, 'OrdersService', state.ordersUp);
+
+  const problems = [];
+  if (state.inventoryUp === false) {
+    problems.push('InventoryService is unavailable: stock cannot be shown or edited, and products and orders cannot be added. ' +
+      'Cancelling a confirmed order will put it in CancellationPending until InventoryService is back.');
+  }
+  if (state.ordersUp === false) {
+    problems.push('OrdersService is unavailable: orders cannot be placed, cancelled or refreshed right now.');
+  }
+  ui.banner.hidden = problems.length === 0;
+  ui.banner.textContent = problems.join(' ');
+}
+
+function setPill(node, name, up) {
+  node.textContent = `${name}: ${up === null ? 'checking…' : up ? 'running' : 'unavailable'}`;
+  node.className = `pill ${up === null ? '' : up ? 'up' : 'down'}`;
+}
+
+function renderProducts() {
+  const rows = [];
+  if (state.inventoryUp === null) {
+    rows.push(messageRow(5, 'Loading…'));
+  } else if (state.inventoryUp === false) {
+    rows.push(messageRow(5, 'Stock is unavailable while InventoryService cannot be reached.'));
+  } else if (state.products.length === 0) {
+    rows.push(messageRow(5, 'No products yet. Add one with the form below.'));
+  } else {
+    const edit = state.stockEdit;
+    if (edit && !state.products.some((p) => p.id === edit.productId)) {
+      closeStockEdit(); // the product being edited no longer exists
     }
-    return node;
+    for (const p of state.products) rows.push(productRow(p));
+  }
+  ui.productsBody.replaceChildren(...rows);
+}
+
+function productRow(product) {
+  const edit = state.stockEdit;
+  if (edit && edit.productId === product.id) {
+    // Live staleness warning: the server will refuse the save if this is showing.
+    const moved = product.stockQuantity !== edit.expected;
+    edit.warning.hidden = !moved;
+    edit.warning.textContent = moved
+      ? `Changed to ${product.stockQuantity} since you started editing (you saw ${edit.expected}). Saving will be refused; cancel and edit again.`
+      : '';
+    return edit.row;
   }
 
-  // Pop-up in the browser + entry in the browser console. The services also log
-  // the same refusal in their own terminal.
-  function showError(title, message) {
-    console.error(`[${title}] ${message}`);
-    els.dialogTitle.textContent = title;
-    els.dialogMessage.textContent = message;
-    if (!els.dialog.open) els.dialog.showModal();
+  return el('tr', {},
+    el('td', { textContent: product.id }),
+    el('td', { textContent: product.name }),
+    el('td', { className: 'num', textContent: money.format(product.price) }),
+    el('td', { className: product.stockQuantity === 0 ? 'num out' : 'num', textContent: product.stockQuantity }),
+    el('td', {}, el('button', {
+      type: 'button',
+      textContent: 'Edit stock',
+      disabled: edit !== null, // one editor at a time
+      onclick: () => startStockEdit(product),
+    })));
+}
+
+function renderProductSelect() {
+  const previous = ui.productSelect.value;
+  const options = state.products.map((p) =>
+    el('option', { value: String(p.id), textContent: `${p.name} (${p.stockQuantity} in stock)` }));
+  ui.productSelect.replaceChildren(...options);
+  if (state.products.some((p) => String(p.id) === previous)) ui.productSelect.value = previous;
+}
+
+const STATUS_LABELS = {
+  Confirmed: 'Confirmed',
+  Rejected: 'Rejected',
+  Cancelled: 'Cancelled',
+  CancellationPending: 'Cancellation pending',
+  Pending: 'Pending',
+};
+
+function renderOrders() {
+  const rows = [];
+  if (state.ordersUp === null) {
+    rows.push(messageRow(6, 'Loading…'));
+  } else if (state.orders.length === 0) {
+    rows.push(messageRow(6, state.ordersUp ? 'No orders yet.' : 'Orders are unavailable while OrdersService cannot be reached.'));
+  } else {
+    const newestFirst = [...state.orders].sort((a, b) => b.id - a.id);
+    for (const order of newestFirst) rows.push(orderRow(order));
+  }
+  ui.ordersBody.replaceChildren(...rows);
+}
+
+function orderRow(order) {
+  const busy = state.busyOrders.has(order.id);
+  const name = state.productNames.get(order.productId) || `Product ${order.productId}`;
+
+  const statusCell = el('td', {},
+    el('span', { className: `badge ${order.status}`, textContent: STATUS_LABELS[order.status] || order.status }));
+  if (order.status === 'CancellationPending') {
+    statusCell.append(el('div', {
+      className: 'hint',
+      textContent: `Waiting for InventoryService · ${order.cancellationAttempts} attempt(s) so far`,
+    }));
   }
 
-  function toast(message, kind = 'info') {
-    console.log(`[${kind}] ${message}`);
-    const node = el('div', { class: `toast ${kind}`, text: message });
-    els.toasts.append(node);
-    setTimeout(() => {
-      node.classList.add('fade');
-      setTimeout(() => node.remove(), 400);
-    }, 4500);
+  const actions = el('td', {});
+  if (order.status === 'Confirmed') {
+    actions.append(el('button', {
+      type: 'button',
+      className: 'danger',
+      textContent: busy ? 'Cancelling…' : 'Cancel order',
+      disabled: busy || !state.ordersUp,
+      onclick: () => cancelOrder(order.id),
+    }));
+  } else if (order.status === 'CancellationPending') {
+    actions.append(el('button', {
+      type: 'button',
+      textContent: busy ? 'Undoing…' : 'Undo cancellation',
+      disabled: busy || !state.ordersUp || order.cancellationInDoubt,
+      title: order.cancellationInDoubt
+        ? 'A cancellation request may already have reached InventoryService, so it can no longer be undone.'
+        : '',
+      onclick: () => undoCancellation(order.id),
+    }));
+  } else {
+    actions.append('—');
   }
 
-  function productName(productId) {
-    const product = state.products.find((p) => p.id === productId);
-    return product ? product.name : `Product #${productId}`;
-  }
+  return el('tr', {},
+    el('td', { textContent: order.id }),
+    el('td', { textContent: name }),
+    el('td', { className: 'num', textContent: order.quantity }),
+    el('td', { textContent: formatDate(order.dateCreated) }),
+    statusCell,
+    actions);
+}
 
-  const formatPrice = (price) => Number(price).toFixed(2);
-  const formatDate = (iso) => (iso ? String(iso).replace('T', ' ').slice(0, 19) : '');
+// ---------- pop-up and toast ----------
 
-  function cancelHint(order) {
-    switch (order.status) {
-      case 'Confirmed': return 'Cancel this order and return its stock to inventory';
-      case 'CancellationPending': return 'Already pending cancellation – the server will refuse a second cancel';
-      case 'Cancelled': return 'Already cancelled – the server will refuse this';
-      case 'Rejected': return 'Rejected orders cannot be cancelled – the server will refuse this';
-      default: return '';
-    }
-  }
+function showPopup(title, message) {
+  if (ui.popup.open) ui.popup.close();
+  ui.popupTitle.textContent = title;
+  ui.popupMessage.textContent = message;
+  ui.popup.showModal();
+}
 
-  // ---------------------------------------------------------------- rendering
-  function renderProducts() {
-    els.productsBody.replaceChildren();
-    if (state.products.length === 0) {
-      els.productsBody.append(el('tr', {}, el('td', { colspan: 4, class: 'muted', text: 'No products yet — add one below.' })));
-    }
-    for (const p of state.products) {
-      els.productsBody.append(el('tr', {}, [
-        el('td', { text: p.id }),
-        el('td', { text: p.name }),
-        el('td', { text: formatPrice(p.price) }),
-        el('td', { class: p.stockQuantity === 0 ? 'stock out' : 'stock', text: p.stockQuantity }),
-      ]));
-    }
+function reportError(title, err) {
+  console.error(`${title}: ${err.message}`);
+  showPopup(title, err.message);
+}
 
-    const current = els.productSelect.value;
-    els.productSelect.replaceChildren();
-    for (const p of state.products) {
-      els.productSelect.append(el('option', { value: p.id, text: `${p.name} — ${p.stockQuantity} in stock` }));
-    }
-    if (current && state.products.some((p) => String(p.id) === current)) els.productSelect.value = current;
-    els.orderSubmit.disabled = state.orderInFlight || state.products.length === 0;
-  }
+let toastTimer = null;
+function showToast(message) {
+  ui.toast.textContent = message;
+  ui.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { ui.toast.hidden = true; }, 4000);
+}
 
-  function renderProductsUnavailable(message) {
-    els.productsBody.replaceChildren(el('tr', {}, el('td', { colspan: 4, class: 'muted error', text: `Inventory unavailable: ${message}` })));
-  }
+// ---------- start ----------
 
-  function renderOrders() {
-    els.ordersBody.replaceChildren();
-    const orders = [...state.orders].sort((a, b) => b.id - a.id);
-    if (orders.length === 0) {
-      els.ordersBody.append(el('tr', {}, el('td', { colspan: 6, class: 'muted', text: 'No orders yet.' })));
-      return;
-    }
-    for (const o of orders) {
-      const busy = state.busyOrders.has(o.id);
-      const actions = [
-        el('button', {
-          class: 'btn small danger', type: 'button', disabled: busy, title: cancelHint(o),
-          text: busy ? 'Working…' : 'Cancel', onclick: () => cancelOrder(o),
-        }),
-      ];
-      if (o.status === 'CancellationPending') {
-        actions.push(el('button', {
-          class: 'btn small', type: 'button', disabled: busy, title: 'Keep the order: revert to Confirmed',
-          text: 'Undo', onclick: () => undoCancellation(o),
-        }));
-      }
-      els.ordersBody.append(el('tr', {}, [
-        el('td', { text: o.id }),
-        el('td', { text: productName(o.productId) }),
-        el('td', { text: o.quantity }),
-        el('td', {}, el('span', { class: `badge ${String(o.status).toLowerCase()}`, text: o.status })),
-        el('td', { text: formatDate(o.dateCreated) }),
-        el('td', { class: 'actions' }, actions),
-      ]));
-    }
-  }
-
-  function renderOrdersUnavailable(message) {
-    els.ordersBody.replaceChildren(el('tr', {}, el('td', { colspan: 6, class: 'muted error', text: `Orders unavailable: ${message}` })));
-  }
-
-  function renderPending() {
-    const { count, max } = state.pending;
-    els.pendingCount.textContent = `Pending cancellations: ${count} / ${max}`;
-    els.pendingCount.className = `pill ${count >= max ? 'down' : count > 0 ? 'warn' : 'neutral'}`;
-  }
-
-  function setPill(pill, label, status) {
-    pill.textContent = `${label}: ${status.online ? 'online' : 'offline'}`;
-    pill.className = `pill ${status.online ? 'ok' : 'down'}`;
-    pill.title = status.detail || '';
-  }
-
-  // ---------------------------------------------------------------- loaders
-  async function loadStatus() {
-    try {
-      const { data } = await api('/api/status');
-      setPill(els.invStatus, 'Inventory', data.inventory);
-      setPill(els.ordStatus, 'Orders', data.orders);
-    } catch (err) {
-      console.warn('Status check failed:', err.message);
-    }
-  }
-
-  async function loadProducts() {
-    try {
-      const { data } = await api(`${INVENTORY_API}/products`);
-      state.products = data;
-      renderProducts();
-    } catch (err) {
-      renderProductsUnavailable(err.message);
-    }
-  }
-
-  async function loadOrders() {
-    try {
-      const [ordersRes, pendingRes] = await Promise.all([
-        api(`${ORDERS_API}/orders`),
-        api(`${ORDERS_API}/orders/pending-cancellations`),
-      ]);
-      state.orders = ordersRes.data;
-      state.pending = pendingRes.data;
-      renderOrders();
-      renderPending();
-    } catch (err) {
-      renderOrdersUnavailable(err.message);
-    }
-  }
-
-  async function refreshAll() {
-    if (state.refreshing) return;
-    state.refreshing = true;
-    try {
-      await loadProducts();               // products first so order rows can show names
-      await Promise.all([loadStatus(), loadOrders()]);
-    } finally {
-      state.refreshing = false;
-    }
-  }
-
-  // ---------------------------------------------------------------- actions
-  async function placeOrder(event) {
-    event.preventDefault();
-    if (state.orderInFlight) {
-      console.warn('Submit ignored: an order request is already in flight.');
-      return;
-    }
-
-    const productId = Number(els.productSelect.value);
-    const quantity = Number(els.orderQty.value);
-    if (!productId || !Number.isInteger(quantity) || quantity < 1) {
-      showError('Invalid order', 'Choose a product and a whole-number quantity of at least 1.');
-      return;
-    }
-
-    state.orderInFlight = true;
-    els.orderSubmit.disabled = true;
-    const originalLabel = els.orderSubmit.textContent;
-    els.orderSubmit.textContent = 'Submitting…';
-
-    try {
-      const { status, data: order } = await api(`${ORDERS_API}/orders`, {
-        method: 'POST',
-        body: { productId, quantity, clientRequestId: state.clientRequestId },
-      });
-
-      // Definitive answer: the next submission must be a brand-new order.
-      state.clientRequestId = newRequestId();
-
-      if (status === 200) {
-        toast(`This submission had already been processed as order #${order.id} (${order.status}); no duplicate was created.`, 'warn');
-      } else if (order.status === 'Rejected') {
-        showError('Order rejected', `Order #${order.id} was rejected: not enough stock for ${quantity} × ${productName(productId)}.`);
-      } else {
-        toast(`Order #${order.id} confirmed.`, 'ok');
-      }
-    } catch (err) {
-      // 4xx is definitive too; for network errors / 5xx keep the same id so a retry
-      // can't turn into a second order.
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) state.clientRequestId = newRequestId();
-      showError('Order failed', err.message);
-    } finally {
-      state.orderInFlight = false;
-      els.orderSubmit.textContent = originalLabel;
-      els.orderSubmit.disabled = false;
-      await refreshAll(); // stock comes back from InventoryService, never computed here
-    }
-  }
-
-  async function cancelOrder(order) {
-    if (state.busyOrders.has(order.id)) return;
-    state.busyOrders.add(order.id);
-    renderOrders();
-    try {
-      const { status } = await api(`${ORDERS_API}/orders/${order.id}/cancel`, { method: 'POST' });
-      if (status === 202) {
-        toast(`Inventory is unavailable — order #${order.id} is now CancellationPending and will be cancelled automatically once InventoryService is back.`, 'warn');
-      } else {
-        toast(`Order #${order.id} cancelled; ${order.quantity} unit(s) returned to inventory.`, 'ok');
-      }
-    } catch (err) {
-      showError('Cannot cancel order', err.message);
-    } finally {
-      state.busyOrders.delete(order.id);
-      await refreshAll();
-    }
-  }
-
-  async function undoCancellation(order) {
-    if (state.busyOrders.has(order.id)) return;
-    state.busyOrders.add(order.id);
-    renderOrders();
-    try {
-      await api(`${ORDERS_API}/orders/${order.id}/undo-cancellation`, { method: 'POST' });
-      toast(`Pending cancellation of order #${order.id} undone; the order is Confirmed again.`, 'ok');
-    } catch (err) {
-      showError('Cannot undo cancellation', err.message);
-    } finally {
-      state.busyOrders.delete(order.id);
-      await refreshAll();
-    }
-  }
-
-  async function retryPending() {
-    els.retryBtn.disabled = true;
-    try {
-      const { data } = await api(`${ORDERS_API}/orders/retry-cancellations`, { method: 'POST' });
-      if (data.skipped) toast('A retry run is already in progress.', 'warn');
-      else if (data.pending === 0) toast('No pending cancellations.', 'info');
-      else if (data.inventoryUnavailable) toast(`Inventory is still unavailable; ${data.stillPending} cancellation(s) remain pending.`, 'warn');
-      else toast(`Retry finished: ${data.cancelled} cancelled, ${data.stillPending} still pending.`, 'ok');
-    } catch (err) {
-      showError('Retry failed', err.message);
-    } finally {
-      els.retryBtn.disabled = false;
-      await refreshAll();
-    }
-  }
-
-  async function addProduct(event) {
-    event.preventDefault();
-    const form = new FormData(els.productForm);
-    const body = {
-      name: String(form.get('name') || '').trim(),
-      price: Number(form.get('price')),
-      stockQuantity: Number(form.get('stockQuantity')),
-    };
-    els.productSubmit.disabled = true;
-    try {
-      const { data } = await api(`${INVENTORY_API}/products`, { method: 'POST', body });
-      toast(`Product "${data.name}" added with ${data.stockQuantity} in stock.`, 'ok');
-      els.productForm.reset();
-    } catch (err) {
-      showError('Cannot add product', err.message);
-    } finally {
-      els.productSubmit.disabled = false;
-      await refreshAll();
-    }
-  }
-
-  // ---------------------------------------------------------------- wiring
-  els.orderForm.addEventListener('submit', placeOrder);
-  els.productForm.addEventListener('submit', addProduct);
-  els.refreshProducts.addEventListener('click', () => loadProducts());
-  els.refreshOrders.addEventListener('click', () => loadOrders());
-  els.retryBtn.addEventListener('click', retryPending);
-
-  refreshAll();
-  setInterval(refreshAll, REFRESH_INTERVAL_MS); // picks up cancellations completed by the worker
-})();
+render();
+refreshAll();
+setInterval(refreshAll, POLL_INTERVAL_MS);

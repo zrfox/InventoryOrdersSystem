@@ -1,76 +1,90 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Inventory &amp; Orders</title>
-  <link rel="stylesheet" href="styles.css" />
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Inventory &amp; Orders</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <h1>Inventory &amp; Orders</h1>
-    <div class="status-pills">
-      <span id="inventory-status" class="pill unknown">Inventory: checking…</span>
-      <span id="orders-status" class="pill unknown">Orders: checking…</span>
-    </div>
-  </header>
-
-  <main class="grid">
-    <section class="card">
-      <div class="card-header">
-        <h2>Products <small>live from InventoryService</small></h2>
-        <button id="refresh-products" class="btn ghost" type="button">Refresh</button>
-      </div>
-      <table class="table">
-        <thead><tr><th>ID</th><th>Name</th><th>Price</th><th>In stock</th></tr></thead>
-        <tbody id="products-body"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
-      </table>
-      <form id="product-form" class="inline-form" autocomplete="off">
-        <h3>Add product</h3>
-        <label>Name <input name="name" required maxlength="100" /></label>
-        <label>Price <input name="price" type="number" min="0.01" step="0.01" required /></label>
-        <label>Stock <input name="stockQuantity" type="number" min="0" step="1" required /></label>
-        <button id="product-submit" class="btn" type="submit">Add</button>
-      </form>
-    </section>
-
-    <section class="card">
-      <div class="card-header"><h2>Place order</h2></div>
-      <form id="order-form" class="stack-form" autocomplete="off">
-        <label>Product <select id="order-product" name="productId" required></select></label>
-        <label>Quantity <input id="order-quantity" name="quantity" type="number" min="1" step="1" value="1" required /></label>
-        <button id="order-submit" class="btn primary" type="submit">Submit order</button>
-        <p class="hint">
-          The button locks while a request is in flight and each submission carries a one‑time request id,
-          so double-clicking (or a retried request) can never create a second order.
-        </p>
-      </form>
-    </section>
-
-    <section class="card wide">
-      <div class="card-header">
-        <h2>Orders</h2>
-        <div class="actions">
-          <span id="pending-count" class="pill neutral">Pending cancellations: 0 / 5</span>
-          <button id="retry-btn" class="btn ghost" type="button">Retry pending now</button>
-          <button id="refresh-orders" class="btn ghost" type="button">Refresh</button>
+    <header>
+        <h1>Inventory &amp; Orders</h1>
+        <div class="services">
+            <span id="inventory-status" class="pill">InventoryService: checking…</span>
+            <span id="orders-status" class="pill">OrdersService: checking…</span>
         </div>
-      </div>
-      <table class="table">
-        <thead><tr><th>ID</th><th>Product</th><th>Qty</th><th>Status</th><th>Created (UTC)</th><th>Actions</th></tr></thead>
-        <tbody id="orders-body"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
-      </table>
-    </section>
-  </main>
+    </header>
 
-  <dialog id="error-dialog" class="error-dialog">
-    <h2 id="error-title">Error</h2>
-    <p id="error-message"></p>
-    <form method="dialog"><button id="error-close" class="btn primary">OK</button></form>
-  </dialog>
+    <div id="banner" class="banner" hidden></div>
 
-  <div id="toasts" class="toasts" aria-live="polite"></div>
+    <main>
+        <section class="card wide">
+            <h2>Products</h2>
+            <p class="hint">
+                Stock is read from InventoryService on every refresh; it is never calculated in the browser.
+                A stock edit is only saved if the stock is still what you were shown when you started editing.
+            </p>
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>Name</th><th class="num">Price</th><th class="num">In stock</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="products-body"></tbody>
+            </table>
+        </section>
 
-  <script src="app.js"></script>
+        <section class="card">
+            <h2>Add a product</h2>
+            <form id="product-form" class="stack">
+                <label>
+                    Name
+                    <input id="product-name-input" type="text" maxlength="100" required>
+                </label>
+                <label>
+                    Price
+                    <input id="product-price-input" type="number" min="0.01" step="0.01" required>
+                </label>
+                <label>
+                    Initial stock
+                    <input id="product-stock-input" type="number" min="0" step="1" value="0" required>
+                </label>
+                <button id="product-submit-button" type="submit">Add product</button>
+            </form>
+        </section>
+
+        <section class="card">
+            <h2>Place an order</h2>
+            <form id="order-form" class="stack">
+                <label>
+                    Product
+                    <select id="product-select" required></select>
+                </label>
+                <label>
+                    Quantity
+                    <input id="quantity-input" type="number" min="1" step="1" value="1" required>
+                </label>
+                <button id="submit-button" type="submit">Submit order</button>
+            </form>
+        </section>
+
+        <section class="card wide">
+            <h2>Orders</h2>
+            <table>
+                <thead>
+                    <tr><th>#</th><th>Product</th><th class="num">Qty</th><th>Created</th><th>Status</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="orders-body"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <dialog id="popup">
+        <h3 id="popup-title"></h3>
+        <p id="popup-message"></p>
+        <form method="dialog"><button>OK</button></form>
+    </dialog>
+
+    <script src="app.js"></script>
 </body>
 </html>
