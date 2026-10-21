@@ -71,6 +71,62 @@ public class ProductsController : ControllerBase
         return NoContent();
     }
 
+    // PUT /api/products/5/stock
+    // Manual stock edit: "set the stock to X, provided it is still Y".
+    // Y (ExpectedStockQuantity) is the value the editor was looking at. If an order, a
+    // cancellation or another editor has changed the stock since then, nothing is saved
+    // and the caller gets 409 with the current value, so an edit based on stale data can
+    // never overwrite someone else's change.
+    [HttpPut("{id}/stock")]
+    public async Task<ActionResult<Product>> SetStock(int id, SetStockRequest request)
+    {
+        var product = await _context.Products.FindAsync(id);
+        if (product == null)
+        {
+            return NotFound(new StockError
+            {
+                Code = StockError.ProductNotFound,
+                Message = $"Product {id} not found."
+            });
+        }
+
+        var expected = request.ExpectedStockQuantity!.Value;
+        if (product.StockQuantity != expected)
+        {
+            return Conflict(StockChangedError(expected, product.StockQuantity));
+        }
+
+        product.StockQuantity = request.StockQuantity!.Value;
+
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The stock changed in the instant between our read and our write.
+            // The concurrency token made the database refuse the update.
+            _context.ChangeTracker.Clear();
+
+            var current = await _context.Products
+                .AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == id);
+
+            if (current == null)
+            {
+                return NotFound(new StockError
+                {
+                    Code = StockError.ProductNotFound,
+                    Message = $"Product {id} not found."
+                });
+            }
+
+            return Conflict(StockChangedError(expected, current.StockQuantity));
+        }
+
+        return product;
+    }
+
     // DELETE /api/products/5
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteProduct(int id)
@@ -202,5 +258,15 @@ public class ProductsController : ControllerBase
             Code = StockError.Busy,
             Message = "Stock is being updated by too many requests at once. Try again."
         });
+    }
+
+    private static StockError StockChangedError(int expected, int actual)
+    {
+        return new StockError
+        {
+            Code = StockError.StockChanged,
+            Message = $"Stock is now {actual}, not {expected}: it changed while you were editing. Nothing was saved.",
+            StockQuantity = actual
+        };
     }
 }

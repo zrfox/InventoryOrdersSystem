@@ -30,11 +30,19 @@ if (string.IsNullOrEmpty(app.Configuration["InventoryApiKey"]))
 }
 
 app.UseDefaultFiles();   // "/" -> wwwroot/index.html
-app.UseStatic­Files();
+app.UseStaticFiles();
 
 // Stock always comes straight from InventoryService.
 app.MapGet("/api/products", (HttpContext context, IHttpClientFactory clients) =>
     Proxy.ForwardAsync(context, clients, Backends.Inventory, "api/products"));
+
+// Add a product.
+app.MapPost("/api/products", (HttpContext context, IHttpClientFactory clients) =>
+    Proxy.ForwardAsync(context, clients, Backends.Inventory, "api/products"));
+
+// Edit a product's stock (refused by InventoryService if the stock changed in the meantime).
+app.MapPut("/api/products/{id:int}/stock", (int id, HttpContext context, IHttpClientFactory clients) =>
+    Proxy.ForwardAsync(context, clients, Backends.Inventory, $"api/products/{id}/stock"));
 
 app.MapGet("/api/orders", (HttpContext context, IHttpClientFactory clients) =>
     Proxy.ForwardAsync(context, clients, Backends.Orders, "api/orders"));
@@ -65,7 +73,7 @@ static class Proxy
         var client = clients.CreateClient(backend);
         using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), path);
 
-        if (HttpMethods.IsPost(context.Request.Method))
+        if (HttpMethods.IsPost(context.Request.Method) || HttpMethods.IsPut(context.Request.Method))
         {
             using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
             var body = await reader.ReadToEndAsync(context.RequestAborted);

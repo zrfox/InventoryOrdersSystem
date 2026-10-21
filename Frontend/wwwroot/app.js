@@ -13,6 +13,19 @@ const ui = {
   productSelect: $('product-select'),
   quantity: $('quantity-input'),
   submit: $('submit-button'),
+  productForm: $('product-form'),
+  productName: $('product-name'),
+  productPrice: $('product-price'),
+  productStock: $('product-stock'),
+  productSubmit: $('product-submit'),
+  stockDialog: $('stock-dialog'),
+  stockForm: $('stock-form'),
+  stockTitle: $('stock-dialog-title'),
+  stockLoaded: $('stock-dialog-loaded'),
+  stockInput: $('stock-input'),
+  stockError: $('stock-dialog-error'),
+  stockSave: $('stock-save'),
+  stockCancel: $('stock-cancel'),
   toast: $('toast'),
   popup: $('popup'),
   popupTitle: $('popup-title'),
@@ -28,14 +41,17 @@ const state = {
   busyOrders: new Set(),    // order ids with a cancel/undo request in flight
   submitting: false,
   pendingSubmission: null,  // { key, fingerprint } of a submission whose outcome isn't known yet
+  addingProduct: false,
+  stockEdit: null,          // { productId, name, expected, saving } while the stock dialog is open
 };
 
 // ---------- talking to the server ----------
 
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, body) {
     super(message);
     this.status = status; // 0 = no response at all
+    this.body = body;     // parsed response body, if there was one
   }
 }
 
@@ -44,7 +60,7 @@ async function api(path, options = {}) {
   try {
     response = await fetch(path, { cache: 'no-store', ...options });
   } catch {
-    throw new ApiError('The front-end server could not be reached.', 0);
+    throw new ApiError('The front-end server could not be reached.', 0, null);
   }
 
   const text = await response.text();
@@ -53,7 +69,7 @@ async function api(path, options = {}) {
     try { body = JSON.parse(text); } catch { body = text; }
   }
 
-  if (!response.ok) throw new ApiError(describeError(body, response.status), response.status);
+  if (!response.ok) throw new ApiError(describeError(body, response.status), response.status, body);
   return { status: response.status, body };
 }
 
@@ -61,6 +77,7 @@ function describeError(body, status) {
   if (typeof body === 'string' && body.length <= 300 && !body.trimStart().startsWith('<')) return body;
   if (body && typeof body === 'object') {
     if (typeof body.error === 'string') return body.error;
+    if (typeof body.message === 'string') return body.message;
     if (body.errors && typeof body.errors === 'object') {
       const messages = Object.values(body.errors).flat().filter((m) => typeof m === 'string');
       if (messages.length) return messages.join(' ');
@@ -123,7 +140,7 @@ function refreshAll() {
   return Promise.all([refreshProducts(), refreshOrders()]);
 }
 
-// ---------- actions ----------
+// ---------- actions: orders ----------
 
 ui.form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -207,6 +224,125 @@ async function orderAction(id, path, errorTitle, onSuccess) {
   }
 }
 
+// ---------- actions: inventory ----------
+
+ui.productForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (state.addingProduct) return; // ignore extra clicks / Enter presses while one is in flight
+
+  const name = ui.productName.value.trim();
+  const price = Number(ui.productPrice.value);
+  const stockText = ui.productStock.value.trim();
+  const stockQuantity = Number(stockText);
+  if (!name || !(price >= 0.01) || stockText === '' || !Number.isInteger(stockQuantity) || stockQuantity < 0) {
+    showPopup('Product not added',
+      'Enter a name, a price of at least 0.01 and a whole-number initial stock of 0 or more.');
+    return;
+  }
+
+  state.addingProduct = true;
+  render();
+
+  try {
+    await api('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, price, stockQuantity }),
+    });
+    ui.productForm.reset();
+    showToast(`Added ${name}.`);
+  } catch (err) {
+    reportError('Product not added', err);
+  } finally {
+    state.addingProduct = false;
+    render();
+    refreshProducts();
+  }
+});
+
+function openStockDialog(product) {
+  // "expected" is the stock the user is looking at right now. It is sent along with the
+  // edit, and InventoryService only applies the edit if the stock is still this value.
+  state.stockEdit = { productId: product.id, name: product.name, expected: product.stockQuantity, saving: false };
+  ui.stockInput.value = product.stockQuantity;
+  ui.stockError.hidden = true;
+  renderStockDialog();
+  if (!ui.stockDialog.open) ui.stockDialog.showModal();
+  ui.stockInput.select();
+}
+
+function closeStockDialog() {
+  state.stockEdit = null;
+  if (ui.stockDialog.open) ui.stockDialog.close();
+}
+
+function renderStockDialog() {
+  const edit = state.stockEdit;
+  if (!edit) return;
+  ui.stockTitle.textContent = `Edit stock: ${edit.name}`;
+  ui.stockLoaded.textContent = `Current stock: ${edit.expected}`;
+  ui.stockSave.disabled = edit.saving;
+  ui.stockSave.textContent = edit.saving ? 'Saving…' : 'Save';
+}
+
+function showStockError(message) {
+  ui.stockError.textContent = message;
+  ui.stockError.hidden = false;
+}
+
+ui.stockCancel.addEventListener('click', closeStockDialog);
+ui.stockDialog.addEventListener('close', () => { state.stockEdit = null; }); // also covers the Esc key
+
+ui.stockForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const edit = state.stockEdit;
+  if (!edit || edit.saving) return; // ignore extra clicks / Enter presses while one is in flight
+
+  const text = ui.stockInput.value.trim();
+  const stockQuantity = Number(text);
+  if (text === '' || !Number.isInteger(stockQuantity) || stockQuantity < 0) {
+    showStockError('Enter a whole number of 0 or more.');
+    return;
+  }
+
+  edit.saving = true;
+  ui.stockError.hidden = true;
+  renderStockDialog();
+
+  try {
+    await api(`/api/products/${edit.productId}/stock`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stockQuantity, expectedStockQuantity: edit.expected }),
+    });
+    closeStockDialog();
+    showToast(`Stock of ${edit.name} set to ${stockQuantity}.`);
+  } catch (err) {
+    edit.saving = false;
+
+    if (state.stockEdit !== edit) {
+      // The dialog was closed while the request was in flight; still tell the user.
+      reportError(`Stock of ${edit.name} not changed`, err);
+    } else if (err.status === 409 && err.body && Number.isInteger(err.body.stockQuantity)) {
+      // An order, a cancellation or another editor changed the stock first, so nothing was
+      // saved. Show the latest value and let the user decide again with up-to-date data.
+      const was = edit.expected;
+      edit.expected = err.body.stockQuantity;
+      console.error(`Stock edit for ${edit.name} refused: stock changed from ${was} to ${edit.expected}.`);
+      showStockError(
+        `The stock changed from ${was} to ${edit.expected} while you were editing, so nothing was saved. ` +
+        'Check your number against the new stock and save again.');
+      renderStockDialog();
+    } else {
+      console.error(`Stock edit for ${edit.name} failed: ${err.message}`);
+      showStockError(err.message);
+      renderStockDialog();
+    }
+  } finally {
+    refreshProducts();
+  }
+});
+
 // ---------- rendering ----------
 
 function el(tag, props = {}, ...children) {
@@ -235,7 +371,7 @@ let lastRendered = '';
 function render() {
   const snapshot = JSON.stringify([
     state.products, state.orders, state.inventoryUp, state.ordersUp,
-    [...state.busyOrders], state.submitting,
+    [...state.busyOrders], state.submitting, state.addingProduct,
   ]);
   if (snapshot === lastRendered) return; // nothing changed: leave the page alone
   lastRendered = snapshot;
@@ -247,6 +383,9 @@ function render() {
 
   ui.submit.disabled = state.submitting || !state.inventoryUp || !state.ordersUp || state.products.length === 0;
   ui.submit.textContent = state.submitting ? 'Submitting…' : 'Submit order';
+
+  ui.productSubmit.disabled = state.addingProduct || !state.inventoryUp;
+  ui.productSubmit.textContent = state.addingProduct ? 'Adding…' : 'Add product';
 }
 
 function renderStatus() {
@@ -255,7 +394,7 @@ function renderStatus() {
 
   const problems = [];
   if (state.inventoryUp === false) {
-    problems.push('InventoryService is unavailable: stock cannot be shown and new orders cannot be placed. ' +
+    problems.push('InventoryService is unavailable: stock cannot be shown or edited, and products and orders cannot be added. ' +
       'Cancelling a confirmed order will put it in CancellationPending until InventoryService is back.');
   }
   if (state.ordersUp === false) {
@@ -273,18 +412,19 @@ function setPill(node, name, up) {
 function renderProducts() {
   const rows = [];
   if (state.inventoryUp === null) {
-    rows.push(messageRow(4, 'Loading…'));
+    rows.push(messageRow(5, 'Loading…'));
   } else if (state.inventoryUp === false) {
-    rows.push(messageRow(4, 'Stock is unavailable while InventoryService cannot be reached.'));
+    rows.push(messageRow(5, 'Stock is unavailable while InventoryService cannot be reached.'));
   } else if (state.products.length === 0) {
-    rows.push(messageRow(4, 'No products yet. Add some with the InventoryService Swagger page.'));
+    rows.push(messageRow(5, 'No products yet. Add one with the form below.'));
   } else {
     for (const p of state.products) {
       rows.push(el('tr', {},
         el('td', { textContent: p.id }),
         el('td', { textContent: p.name }),
         el('td', { className: 'num', textContent: money.format(p.price) }),
-        el('td', { className: p.stockQuantity === 0 ? 'num out' : 'num', textContent: p.stockQuantity })));
+        el('td', { className: p.stockQuantity === 0 ? 'num out' : 'num', textContent: p.stockQuantity }),
+        el('td', {}, el('button', { textContent: 'Edit stock', onclick: () => openStockDialog(p) }))));
     }
   }
   ui.productsBody.replaceChildren(...rows);

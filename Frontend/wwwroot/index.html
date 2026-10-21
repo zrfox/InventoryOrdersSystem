@@ -1,66 +1,101 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Inventory &amp; Orders</title>
-  <link rel="stylesheet" href="styles.css">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Inventory &amp; Orders</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header>
-    <h1>Inventory &amp; Orders</h1>
-    <div class="services">
-      <span id="inventory-status" class="pill">InventoryService: checking…</span>
-      <span id="orders-status" class="pill">OrdersService: checking…</span>
-    </div>
-  </header>
+    <header>
+        <h1>Inventory &amp; Orders</h1>
+        <div class="services">
+            <span id="inventory-status" class="pill">InventoryService: checking…</span>
+            <span id="orders-status" class="pill">OrdersService: checking…</span>
+        </div>
+    </header>
 
-  <div id="banner" class="banner" hidden></div>
+    <div id="banner" class="banner" hidden></div>
 
-  <main>
-    <section class="card">
-      <h2>Products</h2>
-      <p class="hint">Stock is read from InventoryService on every refresh; it is never calculated in the browser.</p>
-      <table>
-        <thead>
-          <tr><th>ID</th><th>Name</th><th class="num">Price</th><th class="num">In stock</th></tr>
-        </thead>
-        <tbody id="products-body"></tbody>
-      </table>
-    </section>
+    <main>
+        <section class="card">
+            <h2>Products</h2>
+            <p class="hint">Stock is read from InventoryService on every refresh; it is never calculated in the browser.</p>
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>Name</th><th class="num">Price</th><th class="num">In stock</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="products-body"></tbody>
+            </table>
 
-    <section class="card">
-      <h2>Place an order</h2>
-      <form id="order-form">
-        <label>Product
-          <select id="product-select" required></select>
-        </label>
-        <label>Quantity
-          <input id="quantity-input" type="number" min="1" step="1" value="1" required>
-        </label>
-        <button id="submit-button" type="submit">Submit order</button>
-      </form>
-    </section>
+            <h3>Add a product</h3>
+            <form id="product-form">
+                <label>
+                    Name
+                    <input id="product-name" type="text" maxlength="100" required>
+                </label>
+                <label>
+                    Price
+                    <input id="product-price" type="number" min="0.01" step="0.01" required>
+                </label>
+                <label>
+                    Initial stock
+                    <input id="product-stock" type="number" min="0" step="1" value="0" required>
+                </label>
+                <button id="product-submit" type="submit">Add product</button>
+            </form>
+        </section>
 
-    <section class="card wide">
-      <h2>Orders</h2>
-      <table>
-        <thead>
-          <tr><th>#</th><th>Product</th><th class="num">Qty</th><th>Created</th><th>Status</th><th>Actions</th></tr>
-        </thead>
-        <tbody id="orders-body"></tbody>
-      </table>
-    </section>
-  </main>
+        <section class="card">
+            <h2>Place an order</h2>
+            <form id="order-form">
+                <label>
+                    Product
+                    <select id="product-select" required></select>
+                </label>
+                <label>
+                    Quantity
+                    <input id="quantity-input" type="number" min="1" step="1" value="1" required>
+                </label>
+                <button id="submit-button" type="submit">Submit order</button>
+            </form>
+        </section>
 
-  <div id="toast" class="toast" hidden></div>
+        <section class="card wide">
+            <h2>Orders</h2>
+            <table>
+                <thead>
+                    <tr><th>#</th><th>Product</th><th class="num">Qty</th><th>Created</th><th>Status</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="orders-body"></tbody>
+            </table>
+        </section>
+    </main>
 
-  <dialog id="popup">
-    <h3 id="popup-title"></h3>
-    <p id="popup-message"></p>
-    <form method="dialog"><button>OK</button></form>
-  </dialog>
+    <div id="toast" class="toast" hidden></div>
 
-  <script src="app.js"></script>
+    <dialog id="popup">
+        <h3 id="popup-title"></h3>
+        <p id="popup-message"></p>
+        <form method="dialog"><button>OK</button></form>
+    </dialog>
+
+    <dialog id="stock-dialog">
+        <h3 id="stock-dialog-title">Edit stock</h3>
+        <p id="stock-dialog-loaded" class="hint"></p>
+        <form id="stock-form">
+            <label>
+                New stock level
+                <input id="stock-input" type="number" min="0" step="1" required>
+            </label>
+            <p id="stock-dialog-error" class="dialog-error" hidden></p>
+            <div class="dialog-actions">
+                <button id="stock-cancel" type="button" class="secondary">Cancel</button>
+                <button id="stock-save" type="submit">Save</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="app.js"></script>
 </body>
 </html>

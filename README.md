@@ -38,8 +38,7 @@ cd OrdersService; dotnet run
 cd Frontend; dotnet run
 ```
 
-Open http://localhost:5211. Add products through the InventoryService Swagger page
-(click **Authorize** and paste your `InventoryApiKey` first).
+Open http://localhost:5211 and add products with the form on the page.
 
 ## Run with Docker
 
@@ -54,6 +53,10 @@ Open http://localhost:5211.
 
 - Shows products with stock read from InventoryService. Stock is re-read after every action
   and every few seconds; the browser never calculates it.
+- Adds products (name, price, initial stock).
+- Edits a product's stock. The edit is sent together with the stock level that was on screen
+  when you started; if an order, a cancellation or another person changed the stock in the
+  meantime, nothing is saved, the dialog shows the new stock and you can save again.
 - Places orders. The submit button is disabled while a request is in flight and each
   submission carries an `Idempotency-Key`, so clicking twice cannot create two orders.
 - Cancels confirmed orders, which returns their stock to inventory.
@@ -102,6 +105,8 @@ OrdersService
 InventoryService
 - `POST /api/products/{id}/stock/deduct` `{ quantity }` → 200, 404, 409 (insufficient stock).
 - `POST /api/products/{id}/stock/restore` `{ operationId, quantity }` → 200 (idempotent), 404.
+- `PUT /api/products/{id}/stock` `{ stockQuantity, expectedStockQuantity }` → 200, 404,
+  409 (the stock is no longer `expectedStockQuantity`; nothing saved, current stock returned).
 
 ## Tests
 
@@ -115,11 +120,12 @@ dotnet test
 - **IntegrationTests**: both services running in memory together — order placement and
   stock deduction, insufficient stock, cancellation returning stock, Inventory going down and
   coming back, OrdersService restarting with a pending cancellation, undo, the pending
-  limit, and the idempotent Inventory stock endpoints.
+  limit, the idempotent Inventory stock endpoints, adding products, and stock edits being
+  refused when the stock changed underneath them.
 
 ## Notes
 
 - The Frontend keeps the API key on the server and has no login of its own; anyone who can
-  reach it can place and cancel orders.
+  reach it can place and cancel orders and edit inventory.
 - OrdersService is assumed to run as a single instance (its cancellation and
   duplicate-submission locks are in-process).
